@@ -1,81 +1,115 @@
-// Access Control System Implementation
-
 #include "gpio.h"
-#include "systick.h"
 #include "uart.h"
+#include "stm32l4xx.h"
 
-#define TEMP_UNLOCK_DURATION 5000 // Duration in ms for temporary unlock
+#define TEMP_UNLOCK_TIME 5000  // 5 segundos para desbloqueo temporal
 
+// Estados de la puerta
 typedef enum {
-    LOCKED,
-    TEMP_UNLOCK,
-    PERM_UNLOCK
-} DoorState_t;
+    DOOR_LOCKED,
+    DOOR_TEMP_UNLOCKED,
+    DOOR_PERM_UNLOCKED
+} DoorState;
 
-DoorState_t current_state = LOCKED;
-uint32_t unlock_timer = 0;
+// Variables globales
+volatile DoorState doorState = DOOR_LOCKED;
+volatile uint32_t doorUnlockTime = 0;
+volatile uint8_t uartCommandReceived = 0;
+volatile char uartCommand = '\0';
 
-void run_state_machine(void) {
-    switch (current_state) {
-        case LOCKED:
-            // No periodic action in locked state
-            break;
-        case TEMP_UNLOCK:
-            if (systick_GetTick() - unlock_timer >= TEMP_UNLOCK_DURATION) {
-                gpio_set_door_led_state(0); // Turn off door state LED
-                current_state = LOCKED;
+// Prototipos de funciones
+void handle_button_press(void);
+void uart_receive_handler(void);
+
+int main(void)
+{
+    // Inicialización de periféricos
+    gpio_init();
+    uart_init();
+
+    // Bucle principal
+    while (1)
+    {
+        // Si recibimos un comando UART
+        if (uartCommandReceived)
+        {
+            uartCommandReceived = 0;
+            if (uartCommand == 'O')  // Comando de abrir puerta
+            {
+                if (doorState == DOOR_LOCKED)
+                {
+                    doorState = DOOR_TEMP_UNLOCKED;
+                    doorUnlockTime = TEMP_UNLOCK_TIME;  // 5 segundos de desbloqueo
+                    uart_send("DOOR_UNLOCKED\n");
+                    led_door_on();
+                }
             }
-            break;
-        case PERM_UNLOCK:
-            // No periodic action in permanent unlock state
-            break;
+            else if (uartCommand == 'C')  // Comando de cerrar puerta
+            {
+                if (doorState != DOOR_LOCKED)
+                {
+                    doorState = DOOR_LOCKED;
+                    uart_send("DOOR_LOCKED\n");
+                    led_door_off();
+                }
+            }
+        }
+
+        handle_button_press();  // Revisar los botones
+
+        // Gestionar el estado de la puerta
+        if (doorState == DOOR_TEMP_UNLOCKED)
+        {
+            if (doorUnlockTime > 0)
+            {
+                doorUnlockTime--;
+            }
+            else
+            {
+                doorState = DOOR_LOCKED;
+                uart_send("DOOR_LOCKED\n");
+                led_door_off();
+            }
+        }
     }
 }
 
-void handle_event(uint8_t event) {
-    if (event == 1) { // Single button press
-        gpio_set_door_led_state(1); // Turn on door state LED
-        current_state = TEMP_UNLOCK;
-        unlock_timer = systick_GetTick();
-    } else if (event == 2) { // Double button press
-        gpio_set_door_led_state(1); // Turn on door state LED
-        current_state = PERM_UNLOCK;
-    } else if (event == 'O') { // UART OPEN command
-        gpio_set_door_led_state(1); // Turn on door state LED
-        current_state = TEMP_UNLOCK;
-        unlock_timer = systick_GetTick();
-    } else if (event == 'C') { // UART CLOSE command
-        gpio_set_door_led_state(0); // Turn off door state LED
-        current_state = LOCKED;
+void handle_button_press(void)
+{
+    static uint32_t buttonPressTime = 0;
+    static uint8_t buttonState = 0;  // 0: liberado, 1: presionado
+
+    if ((GPIOC->IDR & (1 << BUTTON_PIN)) == 0)  // Botón presionado
+    {
+        if (buttonState == 0)
+        {
+            buttonState = 1;
+            buttonPressTime = HAL_GetTick();  // Capturar el tiempo de la primera pulsación
+        }
+        else if (buttonState == 1 && (HAL_GetTick() - buttonPressTime) > 500)  // Pulsación larga (más de 500ms)
+        {
+            uart_send("BUTTON_DOUBLE_PRESS\n");
+            if (doorState == DOOR_TEMP_UNLOCKED)
+            {
+                doorState = DOOR_PERM_UNLOCKED;
+                uart_send("DOOR_PERM_UNLOCKED\n");
+                led_door_on();
+            }
+        }
+    }
+    else  // Botón liberado
+    {
+        buttonState = 0;
     }
 }
 
-int main(void) {
-    configure_systick_and_start();
-    configure_gpio();
-    usart2_init();
-
-    usart2_send_string("System Initialized\r\n");
-
-    uint32_t heartbeat_tick = 0;
-    while (1) {
-        if (systick_GetTick() - heartbeat_tick >= 500) {
-            heartbeat_tick = systick_GetTick();
-            gpio_toggle_heartbeat_led();
-        }
-
-        uint8_t button_pressed = button_driver_get_event();
-        if (button_pressed != 0) {
-            handle_event(button_pressed);
-            button_pressed = 0;
-        }
-
-        uint8_t rx_byte = usart2_get_command();
-        if (rx_byte != 0) {
-            handle_event(rx_byte);
-            rx_byte = 0;
-        }
-
-        run_state_machine();
+// Función de recepción UART (en la interrupción de UART)
+void uart_receive_handler(void)
+{
+    if (USART2->ISR & USART_ISR_RXNE)  // Si hay datos recibidos
+    {
+        uartCommand = USART2->RDR;  // Leer el dato recibido
+        uartCommandReceived = 1;    // Marcar como recibido
     }
 }
+

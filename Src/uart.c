@@ -1,49 +1,28 @@
 #include "uart.h"
-#include "rcc.h"
-#include "nvic.h"
-#include "gpio.h"
+#include "stm32l4xx.h"
 
-static volatile command_t last_command = CMD_NONE;
-
-void usart2_init(void)
+void uart_init(void)
 {
-    configure_gpio_for_usart();
+    // Habilitar reloj para USART2
+    RCC->APB1ENR1 |= RCC_APB1ENR1_USART2EN;
 
-    *RCC_APB1ENR1 |= RCC_APB1ENR1_USART2EN;
+    // Configuración de USART2: 115200 baudios
+    USART2->BRR = 0x8B;  // 115200 baudios (16 MHz / 115200)
 
-    // TODO: Configurar UART2
+    // Configuración de USART2: Habilitar transmisión y recepción
+    USART2->CR1 |= USART_CR1_RE | USART_CR1_TE;  // Habilitar RX y TX
+    USART2->CR1 |= USART_CR1_UE;  // Habilitar USART2
 
-    // Activar interrupción de RXNE
-    USART2->CR1 |= USART_CR1_RXNEIE; 
-    NVIC->ISER[1] |= (1 << 6);
+    // Habilitar interrupciones por recepción
+    USART2->CR1 |= USART_CR1_RXNEIE;  // Habilitar interrupción por recepción de datos
+    NVIC_EnableIRQ(USART2_IRQn);      // Habilitar interrupción USART2 en el NVIC
 }
 
-void usart2_send_string(const char *str)
+void uart_send(const char* data)
 {
-    while (*str) {
-        while (!(USART2->ISR & USART_ISR_TXE));
-        USART2->TDR = *str++;
+    while (*data)
+    {
+        while (!(USART2->ISR & USART_ISR_TXE)) { }  // Esperar a que TXE esté listo
+        USART2->TDR = *data++;  // Enviar carácter
     }
 }
-
-command_t usart2_get_command(void)
-{
-    command_t cmd = last_command;
-    last_command = CMD_NONE;
-    return cmd;
-}
-
-
-void USART2_IRQHandler(void)
-{
-    uint32_t isr = USART2->ISR;
-    if (isr & USART_ISR_RXNE) {
-        char command = USART2->RDR;
-        if (command == 'O') {
-            last_command = CMD_OPEN;
-        } else if (command == 'C') {
-            last_command = CMD_CLOSE;
-        }
-    }
-}
-
