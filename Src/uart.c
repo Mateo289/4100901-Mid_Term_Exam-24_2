@@ -1,28 +1,39 @@
 #include "uart.h"
-#include "stm32l4xx.h"
 
+// Inicializar UART2 con una velocidad de 115200 baudios
 void uart_init(void)
 {
-    // Habilitar reloj para USART2
-    RCC->APB1ENR1 |= RCC_APB1ENR1_USART2EN;
+    // Habilitar el reloj para USART2 (RCC_APB1ENR1, Dirección: 0x40021000)
+    *(volatile uint32_t *)0x40021000 |= (1 << 17);  // Habilitar USART2
 
-    // Configuración de USART2: 115200 baudios
-    USART2->BRR = 0x8B;  // 115200 baudios (16 MHz / 115200)
+    // Configurar baud rate
+    uint32_t uart_baud_rate_value = 80000000 / UART_BAUD_RATE;  // Suponiendo reloj de 80 MHz
+    USART2_BRR = uart_baud_rate_value;
 
-    // Configuración de USART2: Habilitar transmisión y recepción
-    USART2->CR1 |= USART_CR1_RE | USART_CR1_TE;  // Habilitar RX y TX
-    USART2->CR1 |= USART_CR1_UE;  // Habilitar USART2
-
-    // Habilitar interrupciones por recepción
-    USART2->CR1 |= USART_CR1_RXNEIE;  // Habilitar interrupción por recepción de datos
-    NVIC_EnableIRQ(USART2_IRQn);      // Habilitar interrupción USART2 en el NVIC
+    // Habilitar TX y RX, y USART
+    USART2_CR1 |= (1 << 2);  // Habilitar receptor (RE)
+    USART2_CR1 |= (1 << 3);  // Habilitar transmisor (TE)
+    USART2_CR1 |= (1 << 13); // Habilitar USART (UE)
 }
 
-void uart_send(const char* data)
+// Enviar un string por UART
+void uart_send(char *str)
 {
-    while (*data)
+    while (*str)
     {
-        while (!(USART2->ISR & USART_ISR_TXE)) { }  // Esperar a que TXE esté listo
-        USART2->TDR = *data++;  // Enviar carácter
+        // Esperar hasta que el buffer de transmisión esté vacío
+        while (!(USART2_ISR & (1 << 7)))  // Verificar si TXE está establecido
+            ;
+        USART2_TDR = *str++;  // Enviar el siguiente carácter
     }
 }
+
+// Recibir un carácter por UART
+char uart_receive(void)
+{
+    // Esperar hasta que haya datos disponibles
+    while (!(USART2_ISR & (1 << 5)))  // Verificar si RXNE está establecido
+        ;
+    return USART2_RDR;  // Leer el carácter recibido
+}
+
